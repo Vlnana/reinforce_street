@@ -112,15 +112,14 @@ class RLImageMatcher:
         self.optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.policy_net.parameters()), lr=lr)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.9)
         
-        # 使用优先级经验回放，减小缓冲区大小以节省内存
-        self.memory = PrioritizedReplayBuffer(5000)  # 从10000减至5000
+        # 使用优先级经验回放
+        self.memory = PrioritizedReplayBuffer(10000)  # 从5000增至10000
         self.gamma = gamma
         self.beta = 0.4  # 重要性采样参数
         self.beta_increment = 0.001  # beta增量
         
         # 显存监控阈值
-        self.memory_threshold = 0.9  # 当显存使用率达到90%时触发清理
-        self.early_stop_threshold = 0.95  # 当显存使用率达到95%时触发早停
+        self.memory_threshold = 0.98  # 当显存使用率达到90%时触发清理
         
     def select_action(self, state, epsilon=0.1):
         # 使用退火的epsilon-贪婪策略
@@ -151,19 +150,14 @@ class RLImageMatcher:
         # 检查显存使用情况（仅CUDA设备）
         if device.type == 'cuda':
             current_memory = torch.cuda.memory_allocated(device) / torch.cuda.max_memory_allocated(device)
-            if current_memory > self.early_stop_threshold:
-                print(f"警告：显存使用率达到{current_memory:.2%}，触发早停机制")
-                return -1.0  # 返回特殊值表示需要早停
-            
             if current_memory > self.memory_threshold:
                 print(f"警告：显存使用率达到{current_memory:.2%}，执行额外清理")
                 # 清理缓存
                 torch.cuda.empty_cache()
-                # 如果显存仍然紧张，减少记忆缓冲区大小
-                if len(self.memory) > batch_size * 10:
-                    self.memory.clear()
-                    print("已清空经验回放缓冲区以释放内存")
-                    return 0.0
+                # 每5个样本清理一次
+                if len(self.memory) % 5 == 0:
+                    torch.cuda.empty_cache()
+                    print("每5个样本执行一次显存清理")
         
         # 增加beta值（用于重要性采样）
         self.beta = min(1.0, self.beta + self.beta_increment)
