@@ -211,7 +211,6 @@ class RLImageMatcher:
         del current_q_values, next_q_values, target_q_values
         
         # 强制执行垃圾回收
-        import gc
         gc.collect()
         if device.type == 'cuda':
             torch.cuda.empty_cache()
