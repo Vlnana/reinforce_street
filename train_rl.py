@@ -1,4 +1,4 @@
-import torch
+#
 import torch.nn as nn
 import numpy as np
 from torchvision import transforms
@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 from torchvision.datasets import ImageFolder
 import os
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 from rl_model import RLImageMatcher
 from utils_rl import plot_training_curves, save_model
 
@@ -54,6 +55,8 @@ def train_rl_matcher(data_dir, num_epochs=50, batch_size=32, save_dir='./checkpo
         correct = 0
         total = 0
         losses = []
+        epoch_loss = 0.0
+        batch_loss_count = 0
         
         # 显示当前epoch开始
         print(f'\n开始 Epoch {epoch+1}/{num_epochs}')
@@ -61,19 +64,23 @@ def train_rl_matcher(data_dir, num_epochs=50, batch_size=32, save_dir='./checkpo
         
         # 跟踪batch进度
         total_batches = min(len(street_loader), len(satellite_loader))
-        batch_count = 0
         
-        for street_batch, satellite_batch in zip(street_loader, satellite_loader):
+        # 使用tqdm创建进度条
+        pbar = tqdm(zip(street_loader, satellite_loader), total=total_batches, 
+                   desc=f'Epoch {epoch+1}/{num_epochs}', ncols=100)
+        
+        for street_batch, satellite_batch in pbar:
             street_images, street_labels = street_batch
             satellite_images, satellite_labels = satellite_batch
             
             street_images = street_images.to(device)
             satellite_images = satellite_images.to(device)
             
-            # 显示batch进度
-            batch_count += 1
-            if batch_count % 5 == 0 or batch_count == total_batches:
-                print(f'处理 batch: {batch_count}/{total_batches} - {100*batch_count/total_batches:.1f}%')
+            batch_reward = 0
+            batch_correct = 0
+            batch_total = 0
+            batch_loss = 0.0
+            batch_loss_items = 0
             
             # 对每个街景图像进行匹配
             for i in range(min(len(street_images), len(satellite_labels))):
@@ -89,6 +96,7 @@ def train_rl_matcher(data_dir, num_epochs=50, batch_size=32, save_dir='./checkpo
                 # 计算奖励
                 reward = matcher.compute_reward(action_idx, satellite_labels[i].item(), reward_type)
                 total_reward += reward
+                batch_reward += reward
                 
                 # 存储经验
                 next_state = satellite_images[action_idx].unsqueeze(0)
@@ -98,14 +106,29 @@ def train_rl_matcher(data_dir, num_epochs=50, batch_size=32, save_dir='./checkpo
                 if len(matcher.memory) >= batch_size:
                     loss = matcher.update_model(batch_size=batch_size)
                     losses.append(loss)
+                    batch_loss += loss
+                    batch_loss_items += 1
+                    epoch_loss += loss
+                    batch_loss_count += 1
                 
                 # 统计准确率
                 if action_idx == satellite_labels[i].item():
                     correct += 1
+                    batch_correct += 1
                 total += 1
+                batch_total += 1
             
             # 每个批次都软更新目标网络
             matcher.update_target_network()
+            
+            # 更新进度条信息
+            if batch_total > 0 and batch_loss_items > 0:
+                pbar.set_postfix({
+                    'loss': f'{batch_loss/batch_loss_items:.4f}',
+                    'reward': f'{batch_reward/batch_total:.4f}',
+                    'acc': f'{batch_correct/batch_total:.4f}',
+                    'eps': f'{epsilon:.2f}'
+                })
         
         # 更新学习率
         matcher.update_scheduler()
@@ -114,12 +137,12 @@ def train_rl_matcher(data_dir, num_epochs=50, batch_size=32, save_dir='./checkpo
         epsilon = max(0.1, epsilon * 0.95)  # 探索率衰减
         
         # 输出训练信息
-        accuracy = correct / total
-        avg_reward = total_reward / total
-        avg_loss = np.mean(losses) if losses else 0
+        accuracy = correct / total if total > 0 else 0
+        avg_reward = total_reward / total if total > 0 else 0
+        avg_loss = epoch_loss / batch_loss_count if batch_loss_count > 0 else 0
         
         # 显示当前epoch进度
-        print(f'Epoch {epoch+1}/{num_epochs} - 进度: {100*(epoch+1)/num_epochs:.1f}%')
+        print(f'\nEpoch {epoch+1}/{num_epochs} 完成 - 进度: {100*(epoch+1)/num_epochs:.1f}%')
         print(f'Average Reward: {avg_reward:.4f}')
         print(f'Accuracy: {accuracy:.4f}')
         print(f'Average Loss: {avg_loss:.4f}')
