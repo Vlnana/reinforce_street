@@ -131,9 +131,12 @@ class RLImageMatcher:
         # 使用utils_rl中的高级奖励函数
         return compute_reward(predicted_idx, true_idx, reward_type)
     
-    def update_model(self, batch_size=32):
+    def update_model(self, batch_size=32, scaler=None, grad_accum_steps=1):
         if len(self.memory) < batch_size:
-            return
+            return 0.0
+        
+        # 获取当前设备
+        device = next(self.policy_net.parameters()).device
         
         # 增加beta值（用于重要性采样）
         self.beta = min(1.0, self.beta + self.beta_increment)
@@ -168,11 +171,20 @@ class RLImageMatcher:
         # 计算加权损失并更新
         loss = (weights * F.smooth_l1_loss(current_q_values.squeeze(1), target_q_values, reduction='none')).mean()
         
-        self.optimizer.zero_grad()
-        loss.backward()
-        # 梯度裁剪，防止梯度爆炸
-        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 10)
-        self.optimizer.step()
+        # 支持梯度累积和混合精度训练
+        if scaler is not None:
+            # 使用混合精度训练
+            scaler.scale(loss / grad_accum_steps).backward()
+            # 注意：梯度累积在外部控制，这里不需要判断是否需要更新
+            # 梯度裁剪在外部进行
+        else:
+            # 标准训练
+            (loss / grad_accum_steps).backward()
+            # 注意：梯度累积在外部控制，这里不需要判断是否需要更新
+        
+        # 释放不需要的张量以节省显存
+        del state_batch, action_batch, reward_batch, next_state_batch, weights
+        del current_q_values, next_q_values, target_q_values
         
         return loss.item()
         
