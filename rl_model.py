@@ -119,7 +119,7 @@ class RLImageMatcher:
         self.beta_increment = 0.001  # beta增量
         
         # 显存监控阈值
-        self.memory_threshold = 0.98  # 当显存使用率达到90%时触发清理
+        self.memory_threshold = 0.90  # 当显存使用率达到90%时触发清理
         
     def select_action(self, state, epsilon=0.1):
         # 使用退火的epsilon-贪婪策略
