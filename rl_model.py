@@ -113,7 +113,7 @@ class RLImageMatcher:
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.9)
         
         # 使用优先级经验回放
-        self.memory = PrioritizedReplayBuffer(7000)  # 从5000增至10000
+        self.memory = PrioritizedReplayBuffer(5000)  # 从5000增至10000
         self.gamma = gamma
         self.beta = 0.4  # 重要性采样参数
         self.beta_increment = 0.001  # beta增量
