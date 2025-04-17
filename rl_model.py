@@ -9,25 +9,25 @@ from utils_rl import compute_reward
 class DQN(nn.Module):
     def __init__(self, feature_dim=2048, action_dim=951):
         super(DQN, self).__init__()
-        # 使用ResNet50作为特征提取器，冻结部分层以防止过拟合
+        # 使用ResNet50作为特征提取器，冻结更多层以减少显存使用
         resnet = models.resnet50(pretrained=True)
-        # 冻结前几层参数
-        for param in list(resnet.parameters())[:-20]:  # 只训练最后几层
+        # 冻结更多层参数，只训练最后几层
+        for param in list(resnet.parameters())[:-10]:  # 从-20改为-10，冻结更多层
             param.requires_grad = False
             
         self.feature_extractor = nn.Sequential(*list(resnet.children())[:-1])
         
-        # 增强的Q网络，添加批归一化提高训练稳定性
+        # 减小Q网络规模，降低中间层神经元数量以减少显存占用
         self.q_net = nn.Sequential(
-            nn.Linear(feature_dim, 1024),
-            nn.BatchNorm1d(1024),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(1024, 512),
+            nn.Linear(feature_dim, 512),  # 从1024减至512
             nn.BatchNorm1d(512),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(512, action_dim)
+            nn.Linear(512, 256),  # 从512减至256
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, action_dim)
         )
         
     def forward(self, x):
@@ -45,6 +45,12 @@ class PrioritizedReplayBuffer:
         self.position = 0
         self.priorities = np.zeros((capacity,), dtype=np.float32)
         self.alpha = alpha  # 优先级指数
+        
+    def clear(self):
+        """清空缓冲区以释放内存"""
+        self.buffer = []
+        self.position = 0
+        self.priorities = np.zeros((self.capacity,), dtype=np.float32)
         
     def push(self, state, action, reward, next_state, error=None):
         max_priority = self.priorities.max() if self.buffer else 1.0
@@ -106,11 +112,15 @@ class RLImageMatcher:
         self.optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.policy_net.parameters()), lr=lr)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.9)
         
-        # 使用优先级经验回放
-        self.memory = PrioritizedReplayBuffer(10000)
+        # 使用优先级经验回放，减小缓冲区大小以节省内存
+        self.memory = PrioritizedReplayBuffer(5000)  # 从10000减至5000
         self.gamma = gamma
         self.beta = 0.4  # 重要性采样参数
         self.beta_increment = 0.001  # beta增量
+        
+        # 显存监控阈值
+        self.memory_threshold = 0.9  # 当显存使用率达到90%时触发清理
+        self.early_stop_threshold = 0.95  # 当显存使用率达到95%时触发早停
         
     def select_action(self, state, epsilon=0.1):
         # 使用退火的epsilon-贪婪策略
@@ -137,6 +147,23 @@ class RLImageMatcher:
         
         # 获取当前设备
         device = next(self.policy_net.parameters()).device
+        
+        # 检查显存使用情况（仅CUDA设备）
+        if device.type == 'cuda':
+            current_memory = torch.cuda.memory_allocated(device) / torch.cuda.max_memory_allocated(device)
+            if current_memory > self.early_stop_threshold:
+                print(f"警告：显存使用率达到{current_memory:.2%}，触发早停机制")
+                return -1.0  # 返回特殊值表示需要早停
+            
+            if current_memory > self.memory_threshold:
+                print(f"警告：显存使用率达到{current_memory:.2%}，执行额外清理")
+                # 清理缓存
+                torch.cuda.empty_cache()
+                # 如果显存仍然紧张，减少记忆缓冲区大小
+                if len(self.memory) > batch_size * 10:
+                    self.memory.clear()
+                    print("已清空经验回放缓冲区以释放内存")
+                    return 0.0
         
         # 增加beta值（用于重要性采样）
         self.beta = min(1.0, self.beta + self.beta_increment)
@@ -185,6 +212,12 @@ class RLImageMatcher:
         # 释放不需要的张量以节省显存
         del state_batch, action_batch, reward_batch, next_state_batch, weights
         del current_q_values, next_q_values, target_q_values
+        
+        # 强制执行垃圾回收
+        import gc
+        gc.collect()
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
         
         return loss.item()
         
