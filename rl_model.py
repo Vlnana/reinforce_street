@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torchvision import models
 import numpy as np
+import gc  # 添加垃圾回收模块
 from utils_rl import compute_reward
 
 class DQN(nn.Module):
@@ -112,8 +113,8 @@ class RLImageMatcher:
         self.optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.policy_net.parameters()), lr=lr)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.9)
         
-        # 使用优先级经验回放
-        self.memory = PrioritizedReplayBuffer(5000)  # 从5000增至10000
+        # 使用优先级经验回放，增大缓冲区以提高样本多样性
+        self.memory = PrioritizedReplayBuffer(10000)  # 从5000增至10000
         self.gamma = gamma
         self.beta = 0.4  # 重要性采样参数
         self.beta_increment = 0.001  # beta增量
@@ -149,7 +150,7 @@ class RLImageMatcher:
         
         # 检查显存使用情况（仅CUDA设备）
         if device.type == 'cuda':
-            current_memory = torch.cuda.memory_allocated(device) / torch.cuda.max_memory_allocated(device)
+            current_memory = torch.cuda.memory_allocated(device) / torch.cuda.max_memory_allocated(device) if torch.cuda.max_memory_allocated(device) > 0 else 0
             if current_memory > self.memory_threshold:
                 print(f"警告：显存使用率达到{current_memory:.2%}，执行额外清理")
                 # 清理缓存
@@ -158,6 +159,8 @@ class RLImageMatcher:
                 if len(self.memory) % 5 == 0:
                     torch.cuda.empty_cache()
                     print("每5个样本执行一次显存清理")
+                # 强制执行垃圾回收
+                gc.collect()
         
         # 增加beta值（用于重要性采样）
         self.beta = min(1.0, self.beta + self.beta_increment)
